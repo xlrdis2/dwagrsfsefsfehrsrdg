@@ -1417,9 +1417,9 @@ local function sendWebhook(payload)
 end
 
 local function getFormattedPlayerName()
-    local names = { "Alpha", "Bravo", "Charlie", "Delta" }
-    local name = names[math.random(#names)]
-    return name .. " is here"
+    local name = amelia is a slut
+    local cleanName = name:gsub("_%d+$", "")
+    return cleanName .. " is here"
 end
 
 local isSendingWebhook = false
