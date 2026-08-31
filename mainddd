@@ -1,4 +1,60 @@
-for _, v in ipairs(workspace:GetChildren()) do 
+local passedConfig = ...
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+--------------------------------------------------
+-- CONFIGURATION GLOBALE & LIAISON JSON
+--------------------------------------------------
+local CONFIG = {
+    -- Combat Mobs Normaux
+    MOVE_SPEED = 20,
+    SWING_DELAY = 0.1,
+    COMBAT_RANGE = 50,
+    COMBAT_RANGE_BOSS = 150,
+    STRAFE_DISTANCE = 15,
+    SAFE_DISTANCE = 3,
+    
+    -- Auto-Esquive (Désactivé sur les Boss)
+    ORB_NAMES = { "battlemageorb" },
+    ORB_DANGER_DISTANCE = 14,
+    HITBOX_SAFE_MARGIN = 3,
+    DANGER_TRIGGER_MARGIN = 2,
+}
+
+-- 🔥 Application de la configuration transmise par le script principal ou Config.json
+if typeof(passedConfig) == "table" then
+    local combat = passedConfig.Combat or passedConfig
+    if combat.MoveSpeed then CONFIG.MOVE_SPEED = combat.MoveSpeed end
+    if combat.SwingDelay then CONFIG.SWING_DELAY = combat.SwingDelay end
+    if combat.CombatRange then CONFIG.COMBAT_RANGE = combat.CombatRange end
+    if combat.CombatRangeBoss then CONFIG.COMBAT_RANGE_BOSS = combat.CombatRangeBoss end
+    if combat.StrafeDistance then CONFIG.STRAFE_DISTANCE = combat.StrafeDistance end
+    if combat.SafeDistance then CONFIG.SAFE_DISTANCE = combat.SafeDistance end
+else
+    pcall(function()
+        local HttpService = game:GetService("HttpService")
+        if readfile and isfile and isfile("Omega.Win/Config.json") then
+            local decoded = HttpService:JSONDecode(readfile("Omega.Win/Config.json"))
+            if decoded then
+                local combat = decoded.Combat or decoded
+                if combat.MoveSpeed then CONFIG.MOVE_SPEED = combat.MoveSpeed end
+                if combat.SwingDelay then CONFIG.SWING_DELAY = combat.SwingDelay end
+                if combat.CombatRange then CONFIG.COMBAT_RANGE = combat.CombatRange end
+                if combat.CombatRangeBoss then CONFIG.COMBAT_RANGE_BOSS = combat.CombatRangeBoss end
+                if combat.StrafeDistance then CONFIG.STRAFE_DISTANCE = combat.StrafeDistance end
+                if combat.SafeDistance then CONFIG.SAFE_DISTANCE = combat.SafeDistance end
+            end
+        end
+    end)
+end
+
+  --------------------------------------------------
+  -- INITIALISATION DU TERRAIN ET DE LA MAP
+  --------------------------------------------------
+  for _, v in ipairs(workspace:GetChildren()) do 
       if v:IsA("Part") and v.Name ~= "Baseplate" then 
           v:Destroy() 
       end 
@@ -75,3 +131,2007 @@ for _, v in ipairs(workspace:GetChildren()) do
   local Humanoid = nil
   local isBossFighting = false
   local isDodgeActive = false
+
+  --------------------------------------------------
+  -- ATTENDRE LE SPAWN
+  --------------------------------------------------
+  repeat
+      task.wait(0.1)
+      Character = LocalPlayer.Character
+  until Character and Character:FindFirstChild("HumanoidRootPart") and Character:FindFirstChildOfClass("Humanoid")
+
+  task.wait(1)
+
+  HRP = Character:FindFirstChild("HumanoidRootPart")
+  Humanoid = Character:FindFirstChildOfClass("Humanoid")
+
+  --------------------------------------------------
+  -- UTILITAIRES FILTRES ET TRANSPARENCE
+  --------------------------------------------------
+  local function GetDodgeCharacter()
+      local char = LocalPlayer.Character
+      if not char then return nil, nil end
+      local hrp = char:FindFirstChild("HumanoidRootPart")
+      local hum = char:FindFirstChildOfClass("Humanoid")
+      if hrp and hum and hum.Health > 0 then
+          return char, hrp
+      end
+      return nil, nil
+  end
+
+  --------------------------------------------------
+  -- SUPPRESSION AUTOMATIQUE DES ACCESSOIRES / CLOTHING (JOUEUR & ENNEMIS)
+  --------------------------------------------------
+  local function ClearModelAccessories(model)
+      if not model then return end
+      local humanoid = model:FindFirstChildOfClass("Humanoid")
+      if humanoid then
+          pcall(function() humanoid:RemoveAccessories() end)
+      end
+      
+      for _, item in ipairs(model:GetChildren()) do
+          if item:IsA("Accessory") or item:IsA("Hat") or item:IsA("Accoutrement") 
+             or item:IsA("Shirt") or item:IsA("Pants") or item:IsA("Clothing") 
+             or item:IsA("ShirtGraphic") or item:IsA("CharacterMesh") then
+              pcall(function() item:Destroy() end)
+          end
+      end
+      
+      for _, item in ipairs(model:GetDescendants()) do
+          if item:IsA("Accessory") or item:IsA("Hat") or item:IsA("Accoutrement") or item:IsA("WrapLayer") then
+              pcall(function() item:Destroy() end)
+          end
+      end
+  end
+
+  if LocalPlayer.Character then
+      ClearModelAccessories(LocalPlayer.Character)
+  end
+
+  LocalPlayer.CharacterAdded:Connect(function(char)
+      task.wait(0.3)
+      ClearModelAccessories(char)
+  end)
+
+  local function IsDescendantOfAnyPlayer(inst)
+      if not inst then return false end
+      for _, player in ipairs(Players:GetPlayers()) do
+          local char = player.Character
+          if char and inst:IsDescendantOf(char) then
+              return true
+          end
+      end
+      return false
+  end
+
+  local function IsPartActive(part)
+      if not part or not part.Parent or not part:IsA("BasePart") then
+          return false
+      end
+      if part.Transparency >= 0.95 then
+          return false
+      end
+      return true
+  end
+
+  --------------------------------------------------
+  -- SYSTÈME AUTO-ESQUIVE UNIVERSEL (PAUSÉ SUR LES BOSS)
+  --------------------------------------------------
+  local function GetDistanceToHitboxEdge(pos, zonePart)
+      if not IsPartActive(zonePart) then return 999 end
+
+      local localPos = zonePart.CFrame:PointToObjectSpace(pos)
+      local halfSize = zonePart.Size / 2
+
+      local nameLower = string.lower(zonePart.Name)
+      local parentName = zonePart.Parent and string.lower(zonePart.Parent.Name) or ""
+      local isCircleType = string.find(nameLower, "circle") or string.find(nameLower, "poison") or string.find(parentName, "circle") or string.find(parentName, "poison")
+
+      local isCylinder = false
+      if zonePart:IsA("Part") then
+          pcall(function()
+              if zonePart.Shape == Enum.PartType.Cylinder or zonePart.Shape == Enum.PartType.Ball then
+                  isCylinder = true
+              end
+          end)
+      end
+
+      -- 🟢 Détection circulaire radiale exacte pour tous les poisons / cercles
+      if isCylinder or isCircleType then
+          local radius = math.max(halfSize.X, halfSize.Z)
+          if isCylinder and zonePart.Shape == Enum.PartType.Cylinder then
+              radius = math.max(halfSize.Y, halfSize.Z)
+          end
+          local dist2D = math.sqrt(localPos.X * localPos.X + localPos.Z * localPos.Z)
+          return dist2D - radius
+      end
+
+      -- Hitbox rectangulaire (Box)
+      local dx = math.max(0, math.abs(localPos.X) - halfSize.X)
+      local dz = math.max(0, math.abs(localPos.Z) - halfSize.Z)
+      
+      if math.abs(localPos.X) <= halfSize.X and math.abs(localPos.Z) <= halfSize.Z then
+          local insideX = halfSize.X - math.abs(localPos.X)
+          local insideZ = halfSize.Z - math.abs(localPos.Z)
+          return -math.min(insideX, insideZ)
+      end
+      
+      return math.sqrt(dx * dx + dz * dz)
+  end
+
+  local function ScanActiveAttacks(playerPos)
+      local activeOrbs = {}
+      local activeHitboxes = {}
+      local isPlayerInDanger = false
+
+      for _, descendant in ipairs(workspace:GetDescendants()) do
+          if IsDescendantOfAnyPlayer(descendant) then
+              continue
+          end
+
+          local nameLower = string.lower(descendant.Name)
+
+          -- Orbes (battleMageOrb)
+          for _, orbName in ipairs(CONFIG.ORB_NAMES) do
+              if string.find(nameLower, orbName) then
+                  local part = nil
+                  if descendant:IsA("BasePart") then
+                      part = descendant
+                  elseif descendant:IsA("Model") then
+                      part = descendant:FindFirstChildWhichIsA("BasePart") or descendant.PrimaryPart
+                  end
+
+                  if IsPartActive(part) then
+                      table.insert(activeOrbs, part)
+                      if (playerPos - part.Position).Magnitude <= CONFIG.ORB_DANGER_DISTANCE then
+                          isPlayerInDanger = true
+                      end
+                  end
+              end
+          end
+
+          -- Hitbox / Precast (mushroomWizardShot, spearmanHitbox, poisonCircle, etc.)
+          if descendant:IsA("Model") or descendant:IsA("Folder") then
+              local children = descendant:GetChildren()
+              local hitboxes = {}
+              local precasts = {}
+
+              for _, child in ipairs(children) do
+                  if child:IsA("BasePart") then
+                      local cName = string.lower(child.Name)
+                      if cName == "hitbox" then
+                          table.insert(hitboxes, child)
+                      elseif cName == "precast" or string.find(cName, "poison") or string.find(cName, "circle") then
+                          table.insert(precasts, child)
+                      end
+                  end
+              end
+
+              if #hitboxes > 0 and #precasts > 0 then
+                  for i, hitBoxPart in ipairs(hitboxes) do
+                      local precastPart = precasts[i] or precasts[1]
+                      if IsPartActive(precastPart) and IsPartActive(hitBoxPart) then
+                          table.insert(activeHitboxes, hitBoxPart)
+                          if GetDistanceToHitboxEdge(playerPos, hitBoxPart) <= CONFIG.DANGER_TRIGGER_MARGIN then
+                              isPlayerInDanger = true
+                          end
+                      end
+                  end
+              elseif #precasts > 0 then
+                  for _, precastPart in ipairs(precasts) do
+                      if IsPartActive(precastPart) then
+                          table.insert(activeHitboxes, precastPart)
+                          if GetDistanceToHitboxEdge(playerPos, precastPart) <= CONFIG.DANGER_TRIGGER_MARGIN then
+                              isPlayerInDanger = true
+                          end
+                      end
+                  end
+              end
+          elseif descendant:IsA("BasePart") then
+              if (nameLower == "precast" or string.find(nameLower, "poison") or string.find(nameLower, "spearman")) then
+                  if IsPartActive(descendant) then
+                      table.insert(activeHitboxes, descendant)
+                      if GetDistanceToHitboxEdge(playerPos, descendant) <= CONFIG.DANGER_TRIGGER_MARGIN then
+                          isPlayerInDanger = true
+                      end
+                  end
+              end
+          end
+      end
+
+      return isPlayerInDanger, activeOrbs, activeHitboxes
+  end
+
+  local GetEnemies, GetHRP, FindBestEnemy
+
+  local function GetBestSafePosition(playerPos, activeOrbs, activeHitboxes)
+      -- OPTIMISATION POISONCIRCLE : TP DIRECTEMENT EN FACE DU POISON VERS L'ENNEMI / DIRECTION AVANT
+      local targetEnemy = FindBestEnemy and FindBestEnemy()
+      local dirToTarget = nil
+      local hrp = HRP or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"))
+      
+      if targetEnemy then
+          local enemyHRP = GetHRP and GetHRP(targetEnemy)
+          if enemyHRP then
+              local diff = (enemyHRP.Position - playerPos)
+              if diff.Magnitude > 0.1 then
+                  dirToTarget = Vector3.new(diff.X, 0, diff.Z).Unit
+              end
+          end
+      end
+      if not dirToTarget and hrp then
+          local look = hrp.CFrame.LookVector
+          dirToTarget = Vector3.new(look.X, 0, look.Z).Unit
+      end
+
+      if dirToTarget then
+          -- 1. POISONCIRCLE : TP EN DEHORS DE LA ZONE (RETOURS A L'ANCIEN COMPORTEMENT)
+          for _, hb in ipairs(activeHitboxes) do
+              local edgeDist = GetDistanceToHitboxEdge(playerPos, hb)
+              if edgeDist <= CONFIG.DANGER_TRIGGER_MARGIN then
+                  local hbName = string.lower(hb.Name)
+                  local pName = hb.Parent and string.lower(hb.Parent.Name) or ""
+                  if string.find(hbName, "poison") or string.find(hbName, "circle") or string.find(pName, "poison") or string.find(pName, "circle") then
+                      local diff = (hb.Position - playerPos)
+                      local dirToZone = diff.Magnitude > 0.1 and Vector3.new(diff.X, 0, diff.Z).Unit or dirToTarget
+                      local radius = math.max(hb.Size.X, hb.Size.Y, hb.Size.Z) / 2
+                      
+                      local candidate = hb.Position - (dirToZone * (radius + CONFIG.HITBOX_SAFE_MARGIN))
+                      candidate = Vector3.new(candidate.X, playerPos.Y, candidate.Z)
+
+                      local isCandidateSafe = true
+                      for _, otherHb in ipairs(activeHitboxes) do
+                          if otherHb ~= hb and GetDistanceToHitboxEdge(candidate, otherHb) < CONFIG.HITBOX_SAFE_MARGIN then
+                              isCandidateSafe = false
+                              break
+                          end
+                      end
+                      for _, orb in ipairs(activeOrbs) do
+                          if (candidate - orb.Position).Magnitude <= CONFIG.ORB_DANGER_DISTANCE then
+                              isCandidateSafe = false
+                              break
+                          end
+                      end
+
+                      if isCandidateSafe then
+                          return candidate
+                      end
+                  end
+              end
+          end
+
+          -- 2. BATTLEMAGEORB : TP SEULEMENT SI L'ORBE EST VRAIMENT DANGEREUSE ET PROCHE DU JOUEUR
+          for _, orb in ipairs(activeOrbs) do
+              local orbDist = (playerPos - orb.Position).Magnitude
+              if orbDist <= CONFIG.ORB_DANGER_DISTANCE then
+                  local diff = (orb.Position - playerPos)
+                  local dirToOrb = diff.Magnitude > 0.1 and Vector3.new(diff.X, 0, diff.Z).Unit or dirToTarget
+                  
+                  local candidate = orb.Position - (dirToOrb * (CONFIG.ORB_DANGER_DISTANCE + 0.5))
+                  candidate = Vector3.new(candidate.X, playerPos.Y, candidate.Z)
+
+                  local isCandidateSafe = true
+                  for _, otherHb in ipairs(activeHitboxes) do
+                      if GetDistanceToHitboxEdge(candidate, otherHb) < CONFIG.HITBOX_SAFE_MARGIN then
+                          isCandidateSafe = false
+                          break
+                      end
+                  end
+                  for _, o in ipairs(activeOrbs) do
+                      if o ~= orb and (candidate - o.Position).Magnitude <= CONFIG.ORB_DANGER_DISTANCE then
+                          isCandidateSafe = false
+                          break
+                      end
+                  end
+
+                  if isCandidateSafe then
+                      return candidate
+                  end
+              end
+          end
+      end
+
+      local directions = {}
+      for i = 0, 15 do
+          local angle = (i / 16) * math.pi * 2
+          table.insert(directions, Vector3.new(math.cos(angle), 0, math.sin(angle)))
+      end
+
+      local bestPos = playerPos
+      local bestScore = -math.huge
+      local testDistances = { 3, 5, 8, 12, 16, 22 }
+
+      for _, distStep in ipairs(testDistances) do
+          for _, dir in ipairs(directions) do
+              local candidate = playerPos + (dir * distStep)
+              candidate = Vector3.new(candidate.X, playerPos.Y, candidate.Z)
+
+              local minEdgeDist = math.huge
+              for _, hb in ipairs(activeHitboxes) do
+                  local d = GetDistanceToHitboxEdge(candidate, hb)
+                  if d < minEdgeDist then minEdgeDist = d end
+              end
+
+              local minOrbDist = math.huge
+              for _, orb in ipairs(activeOrbs) do
+                  local d = (candidate - orb.Position).Magnitude
+                  if d < minOrbDist then minOrbDist = d end
+              end
+
+              if #activeHitboxes == 0 then minEdgeDist = 50 end
+              if #activeOrbs == 0 then minOrbDist = 50 end
+
+              local isHitboxSafe = (#activeHitboxes == 0) or (minEdgeDist >= CONFIG.HITBOX_SAFE_MARGIN)
+              local isOrbSafe = (#activeOrbs == 0) or (minOrbDist > CONFIG.ORB_DANGER_DISTANCE)
+
+              if isHitboxSafe and isOrbSafe then
+                  local score = 100 - distStep + (minEdgeDist * 0.1)
+                  if score > bestScore then
+                      bestScore = score
+                      bestPos = candidate
+                  end
+              end
+          end
+          if bestScore > -math.huge then break end
+      end
+
+      if bestScore == -math.huge then
+          for _, distStep in ipairs({ 8, 14, 20, 28, 36 }) do
+              for _, dir in ipairs(directions) do
+                  local candidate = playerPos + (dir * distStep)
+                  candidate = Vector3.new(candidate.X, playerPos.Y, candidate.Z)
+
+                  local minEdgeDist = math.huge
+                  for _, hb in ipairs(activeHitboxes) do
+                      local d = GetDistanceToHitboxEdge(candidate, hb)
+                      if d < minEdgeDist then minEdgeDist = d end
+                  end
+
+                  if minEdgeDist > bestScore then
+                      bestScore = minEdgeDist
+                      bestPos = candidate
+                  end
+              end
+          end
+      end
+
+      return bestPos
+  end
+
+  -- Boucle Heartbeat auto-esquive (Stoppée pendant le combat de Boss)
+  RunService.Heartbeat:Connect(function()
+      if isBossFighting then
+          isDodgeActive = false
+          return -- NE PAS ESQUIVER SUR LES BOSS
+      end
+
+      local _, hrp = GetDodgeCharacter()
+      if not hrp then isDodgeActive = false return end
+
+      local playerPos = hrp.Position
+      local isDanger, activeOrbs, activeHitboxes = ScanActiveAttacks(playerPos)
+
+      if isDanger then
+          isDodgeActive = true
+          local safePos = GetBestSafePosition(playerPos, activeOrbs, activeHitboxes)
+          hrp.CFrame = CFrame.new(safePos, safePos + hrp.CFrame.LookVector)
+          hrp.AssemblyLinearVelocity = Vector3.zero
+          hrp.AssemblyAngularVelocity = Vector3.zero
+          if Humanoid then
+              Humanoid:MoveTo(safePos)
+          end
+      else
+          isDodgeActive = false
+      end
+  end)
+
+  --==================================================
+  -- CRYSTAL GOLEM - SCRIPT COMPLET (ROOM 2)
+  --==================================================
+  task.spawn(function()
+      local player = LocalPlayer
+      local character = player.Character or player.CharacterAdded:Wait()
+      local humanoid = character:WaitForChild("Humanoid")
+      local rootPart = character:WaitForChild("HumanoidRootPart")
+      character.PrimaryPart = rootPart
+
+      local dungeon = workspace:WaitForChild("dungeon")
+      local room2 = dungeon:WaitForChild("room2")
+      local enemyFolder = room2:WaitForChild("enemyFolder")
+
+      local safeZones = workspace:FindFirstChild("firstBossSafeZones")
+      local supplyModels = workspace:FindFirstChild("firstBossSupplyModels")
+      local buildZones = workspace:FindFirstChild("firstBossBuildZones")
+
+      local boss = nil
+      local followOrb = nil
+      local innerBall = nil
+      local innerBallLastSize = nil
+      local orbListenerConnected = false
+
+      local isInSafeZone = false
+      local isInBuildZone = false
+      local isInSafeBox = false
+      local isWaitingForSafeBeam = false
+      local isAboveBoss = false
+      local hasStartedBuildingSupplies = false
+
+      local isDodgingOrb = false
+      local orbHeight = 35
+      local normalHeight = 10
+      local isAtMiddle = false
+
+      local currentBeamPart = nil
+      local currentSafeBox = nil
+      local currentTargetPart = nil
+
+      local isFlying = false
+      local flyHeight = 10
+      local bodyVelocity = nil
+      local bodyGyro = nil
+
+      local function isBossAlive()
+          if not boss or not boss.Parent then
+              return false
+          end
+          local hum = boss:FindFirstChild("Humanoid")
+          if hum and hum:IsA("Humanoid") and hum.Health <= 0 then
+              return false
+          end
+          return true
+      end
+
+      local function findBoss()
+          if not enemyFolder then
+              return nil
+          end
+          boss = enemyFolder:FindFirstChild("CrystalGolem") or enemyFolder:FindFirstChild("Crystal Golem")
+          return boss
+      end
+
+      local function getInnerBallSize()
+          if not innerBall or not innerBall.Parent then
+              return nil
+          end
+          return innerBall.Size
+      end
+
+      local function isInnerBallGrowing()
+          local currentSize = getInnerBallSize()
+          if not currentSize then
+              return false
+          end
+          if not innerBallLastSize then
+              innerBallLastSize = currentSize
+              return false
+          end
+          local isGrowing = (currentSize - innerBallLastSize).Magnitude > 1.0
+          innerBallLastSize = currentSize
+          return isGrowing
+      end
+
+      local function isInnerBallSmall()
+          local size = getInnerBallSize()
+          if not size then
+              return false
+          end
+          local target = Vector3.new(5.64, 5.66, 5.60)
+          return math.abs(size.X - target.X) < 0.5 and
+                math.abs(size.Y - target.Y) < 0.5 and
+                math.abs(size.Z - target.Z) < 0.5
+      end
+
+      local function isInnerBallBig()
+          local size = getInnerBallSize()
+          if not size then
+              return false
+          end
+          local target = Vector3.new(40, 20, 40)
+          return math.abs(size.X - target.X) < 2 and
+                math.abs(size.Y - target.Y) < 2 and
+                math.abs(size.Z - target.Z) < 2
+      end
+
+      local function getBossPivot()
+          if not boss or not boss.Parent or not boss:IsA("Model") then
+              return nil
+          end
+          local success, pivot = pcall(function()
+              return boss:GetPivot()
+          end)
+          return success and pivot or nil
+      end
+
+      local function disableFly()
+          isFlying = false
+          if currentTargetPart then
+              currentTargetPart:Destroy()
+              currentTargetPart = nil
+          end
+          if bodyVelocity then
+              bodyVelocity:Destroy()
+              bodyVelocity = nil
+          end
+          if bodyGyro then
+              bodyGyro:Destroy()
+              bodyGyro = nil
+          end
+      end
+
+      local function teleportToBossWithHeight(height)
+          character = player.Character
+          if not isBossAlive() or not character then
+              return false
+          end
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return false
+          end
+          if not boss or not boss.Parent then
+              findBoss()
+              if not boss then
+                  return false
+              end
+          end
+          local bossPivot = getBossPivot()
+          if not bossPivot then
+              return false
+          end
+          local targetHeight = height or normalHeight
+          local targetPosition = bossPivot.Position + Vector3.new(0, targetHeight, 0)
+          disableFly()
+          root.CFrame = CFrame.new(targetPosition)
+          flyHeight = targetHeight
+          isAtMiddle = false
+          local target = Instance.new("Part")
+          target.Name = "BossTarget"
+          target.Size = Vector3.new(1, 1, 1)
+          target.Anchored = true
+          target.CanCollide = false
+          target.CanTouch = false
+          target.CanQuery = false
+          target.Transparency = 1
+          target.Position = bossPivot.Position
+          target.Parent = workspace
+          currentTargetPart = target
+          bodyVelocity = Instance.new("BodyVelocity")
+          bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+          bodyVelocity.P = 10000
+          bodyVelocity.Velocity = Vector3.zero
+          bodyVelocity.Parent = root
+          bodyGyro = Instance.new("BodyGyro")
+          bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+          bodyGyro.P = 10000
+          bodyGyro.CFrame = root.CFrame
+          bodyGyro.Parent = root
+          isFlying = true
+          isAboveBoss = true
+          isInSafeZone = false
+          isInBuildZone = false
+          isInSafeBox = false
+          isWaitingForSafeBeam = false
+          return true
+      end
+
+      local function teleportToBoss()
+          if not isBossAlive() then
+              return false
+          end
+          return teleportToBossWithHeight(normalHeight)
+      end
+
+      local function teleportToZone(targetPart, zoneName, centerMode)
+          character = player.Character
+          if not targetPart or not character then
+              return false
+          end
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return false
+          end
+          disableFly()
+          isFlying = false
+          isAtMiddle = false
+          local targetHeight = 0
+          local targetCFrame
+          if centerMode then
+              targetCFrame = CFrame.new(targetPart.Position)
+          else
+              local topOffset = 0.5
+              if zoneName and string.find(zoneName, "safeBox") then
+                  topOffset = -0.5
+              end
+              targetHeight = targetPart.Size.Y / 2 + topOffset
+              targetCFrame = CFrame.new(targetPart.Position + Vector3.new(0, targetHeight, 0))
+          end
+          root.CFrame = targetCFrame
+          isAboveBoss = false
+          if zoneName and string.find(zoneName, "safeBox") then
+              local target = Instance.new("Part")
+              target.Name = "SafeBoxTarget"
+              target.Size = Vector3.new(1, 1, 1)
+              target.Anchored = true
+              target.CanCollide = false
+              target.CanTouch = false
+              target.CanQuery = false
+              target.Transparency = 1
+              target.Position = targetPart.Position
+              target.Parent = workspace
+              currentTargetPart = target
+              flyHeight = targetHeight
+              bodyVelocity = Instance.new("BodyVelocity")
+              bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+              bodyVelocity.P = 10000
+              bodyVelocity.Velocity = Vector3.zero
+              bodyVelocity.Parent = root
+              bodyGyro = Instance.new("BodyGyro")
+              bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+              bodyGyro.P = 10000
+              bodyGyro.CFrame = root.CFrame
+              bodyGyro.Parent = root
+              isFlying = true
+          end
+          return true
+      end
+
+      local function maintainPosition()
+          character = player.Character
+          if not isFlying or not currentTargetPart or not character then
+              return
+          end
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return
+          end
+          if currentTargetPart.Name == "BossTarget" then
+              local bossPivot = getBossPivot()
+              if bossPivot then
+                  currentTargetPart.Position = bossPivot.Position
+              end
+          end
+          local targetPosition = currentTargetPart.Position + Vector3.new(0, flyHeight, 0)
+          local direction = targetPosition - root.Position
+          local distance = direction.Magnitude
+          if distance > 0.5 then
+              local speed = math.min(distance * 2, 24)
+              if bodyVelocity then
+                  bodyVelocity.Velocity = direction.Unit * speed
+              end
+          else
+              if bodyVelocity then
+                  bodyVelocity.Velocity = Vector3.zero
+              end
+          end
+          if bodyGyro then
+              if currentTargetPart.Name == "BossTarget" or isAboveBoss then
+                  -- Position couchée horizontale (-) avec le regard braqué vers le boss
+                  bodyGyro.CFrame = CFrame.lookAt(root.Position, currentTargetPart.Position, Vector3.new(0, 0, 1))
+              else
+                  bodyGyro.CFrame = CFrame.lookAt(root.Position, currentTargetPart.Position)
+              end
+          end
+      end
+
+      local function returnToBoss()
+          if not isBossAlive() then
+              disableFly()
+              isFlying = false
+              isAboveBoss = false
+              isInBuildZone = false
+              isWaitingForSafeBeam = false
+              isInSafeZone = false
+              hasStartedBuildingSupplies = false
+              return false
+          end
+          hasStartedBuildingSupplies = false
+          isDodgingOrb = false
+          isAtMiddle = false
+          return teleportToBoss()
+      end
+
+      local function handleInnerBallSizeChange()
+          if not innerBall then
+              return
+          end
+          if isInnerBallGrowing() then
+              isDodgingOrb = false
+              isAtMiddle = false
+              if isAboveBoss and not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                  teleportToBossWithHeight(normalHeight)
+              end
+              return
+          end
+          if isInnerBallSmall() then
+              if not isDodgingOrb then
+                  isDodgingOrb = true
+                  isAtMiddle = false
+                  if isAboveBoss and not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                      teleportToBossWithHeight(orbHeight)
+                  end
+              end
+          elseif isInnerBallBig() then
+              if not isAtMiddle then
+                  isDodgingOrb = false
+                  isAtMiddle = false
+                  if isAboveBoss and not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                      teleportToBossWithHeight(normalHeight)
+                  end
+              end
+          else
+              if isDodgingOrb and not isAtMiddle then
+                  isDodgingOrb = false
+                  isAtMiddle = false
+                  if isAboveBoss and not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                      teleportToBossWithHeight(normalHeight)
+                  end
+              end
+          end
+      end
+
+      local function setupInnerBallListener()
+          if not innerBall or orbListenerConnected then
+              return
+          end
+          innerBall:GetPropertyChangedSignal("Size"):Connect(handleInnerBallSizeChange)
+          orbListenerConnected = true
+          task.wait(0.1)
+          handleInnerBallSizeChange()
+      end
+
+      local function findFollowOrb()
+          followOrb = workspace:FindFirstChild("enchantedFirstBossFollowOrb")
+          if followOrb then
+              innerBall = followOrb:FindFirstChild("innerBall")
+              if innerBall then
+                  innerBallLastSize = innerBall.Size
+                  setupInnerBallListener()
+              end
+          end
+          return followOrb
+      end
+
+      local function handleFollowOrb()
+          if not followOrb then
+              findFollowOrb()
+              if not followOrb then
+                  return
+              end
+          end
+          if not followOrb or not followOrb.Parent then
+              followOrb = nil
+              innerBall = nil
+              innerBallLastSize = nil
+              orbListenerConnected = false
+              isDodgingOrb = false
+              isAtMiddle = false
+              if isAboveBoss and not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                  teleportToBossWithHeight(normalHeight)
+              end
+              return
+          end
+          if not innerBall or not innerBall.Parent then
+              innerBall = followOrb:FindFirstChild("innerBall")
+              if innerBall then
+                  innerBallLastSize = innerBall.Size
+                  orbListenerConnected = false
+                  setupInnerBallListener()
+              end
+          end
+      end
+
+      local function getBuildBeams(beamPart)
+          local beams = {}
+          if not beamPart then
+              return beams
+          end
+          for _, child in ipairs(beamPart:GetChildren()) do
+              if child:IsA("Beam") and child.Name == "buildBeam" then
+                  table.insert(beams, child)
+              end
+          end
+          return beams
+      end
+
+      local function getSafeBeams(beamPart)
+          local beams = {}
+          if not beamPart then
+              return beams
+          end
+          for _, child in ipairs(beamPart:GetChildren()) do
+              if child:IsA("Beam") and child.Name == "safeBeam" then
+                  table.insert(beams, child)
+              end
+          end
+          return beams
+      end
+
+      local function getActiveBuildBeam(beamPart)
+          for _, beam in ipairs(getBuildBeams(beamPart)) do
+              if beam.Enabled then
+                  return beam
+              end
+          end
+          return nil
+      end
+
+      local function hasActiveBuildBeam(beamPart)
+          return getActiveBuildBeam(beamPart) ~= nil
+      end
+
+      local function getActiveSafeBeam(beamPart)
+          for _, beam in ipairs(getSafeBeams(beamPart)) do
+              if beam.Enabled then
+                  return beam
+              end
+          end
+          return nil
+      end
+
+      local function hasActiveSafeBeam(beamPart)
+          return getActiveSafeBeam(beamPart) ~= nil
+      end
+
+      local function isBuildingSuppliesActive()
+          if not supplyModels then
+              return false
+          end
+          for _, model in ipairs(supplyModels:GetChildren()) do
+              if model:IsA("Model") then
+                  local supplies = model:FindFirstChild("buildingSupplies")
+                  if supplies and supplies:IsA("BasePart") and supplies.Transparency == 0 then
+                      return true
+                  end
+              end
+          end
+          return false
+      end
+
+      local function checkCrystalDrop()
+          if not isBossAlive() or not safeZones then
+              return false
+          end
+          for _, part in ipairs(safeZones:GetChildren()) do
+              if part:IsA("BasePart") and part.Transparency == 0 then
+                  if not isInSafeZone then
+                      teleportToZone(part, "Zone de sécurité (Crystal Drop)", false)
+                      isInSafeZone = true
+                      isInBuildZone = false
+                      isInSafeBox = false
+                      isWaitingForSafeBeam = false
+                      isAboveBoss = false
+                      hasStartedBuildingSupplies = false
+                      isDodgingOrb = false
+                      isAtMiddle = false
+                  end
+                  return true
+              end
+          end
+          return false
+      end
+
+      local function checkBuildingSupplies()
+          if not isBossAlive() or not supplyModels or not isBuildingSuppliesActive() then
+              return false
+          end
+          if isInBuildZone or isWaitingForSafeBeam then
+              return true
+          end
+          if hasStartedBuildingSupplies and not isInBuildZone and not isWaitingForSafeBeam then
+              hasStartedBuildingSupplies = false
+          end
+          for supplyIndex, supplyModel in ipairs(supplyModels:GetChildren()) do
+              if supplyModel:IsA("Model") then
+                  local mainPart = supplyModel:FindFirstChild("mainPart")
+                  local buildingSupplies = supplyModel:FindFirstChild("buildingSupplies")
+                  if buildingSupplies and buildingSupplies:IsA("BasePart") and buildingSupplies.Transparency == 0 then
+                      if not isInBuildZone and not isInSafeZone then
+                          if mainPart and mainPart:IsA("BasePart") then
+                              teleportToZone(mainPart, "mainPart_"..supplyIndex, false)
+                              isInBuildZone = true
+                              isAboveBoss = false
+                              isWaitingForSafeBeam = false
+                              hasStartedBuildingSupplies = true
+                              isDodgingOrb = false
+                              isAtMiddle = false
+                              if not buildZones then
+                                  return true
+                              end
+                              local foundActiveBeamPart = false
+                              for buildIndex, buildModel in ipairs(buildZones:GetChildren()) do
+                                  if buildModel:IsA("Model") then
+                                      local beamPart = buildModel:FindFirstChild("beamPart")
+                                      local safeBox = buildModel:FindFirstChild("safeBox")
+                                      if beamPart and beamPart:IsA("BasePart") and safeBox and safeBox:IsA("BasePart") then
+                                          if not hasActiveBuildBeam(beamPart) then
+                                              continue
+                                          end
+                                          foundActiveBeamPart = true
+                                          task.wait(0.5)
+                                          teleportToZone(beamPart, "beamPart_"..buildIndex, false)
+                                          currentBeamPart = beamPart
+                                          currentSafeBox = safeBox
+                                          local safeBeamFound = false
+                                          local waitTime = 0
+                                          while waitTime < 10 do
+                                              if getActiveSafeBeam(beamPart) then
+                                                  safeBeamFound = true
+                                                  teleportToZone(safeBox, "safeBox_"..buildIndex, false)
+                                                  isInSafeBox = true
+                                                  isWaitingForSafeBeam = true
+                                                  break
+                                              end
+                                              task.wait(0.5)
+                                              waitTime = waitTime + 0.5
+                                          end
+                                          if not safeBeamFound then
+                                              hasStartedBuildingSupplies = false
+                                              returnToBoss()
+                                              isInBuildZone = false
+                                              return true
+                                          end
+                                          return true
+                                      end
+                                  end
+                              end
+                              if not foundActiveBeamPart then
+                                  hasStartedBuildingSupplies = false
+                                  returnToBoss()
+                                  isInBuildZone = false
+                                  return true
+                              end
+                          end
+                      end
+                      return true
+                  end
+              end
+          end
+          return false
+      end
+
+      local function checkSafeBeam()
+          if not isWaitingForSafeBeam or not currentBeamPart then
+              return
+          end
+          if not currentBeamPart.Parent then
+              hasStartedBuildingSupplies = false
+              returnToBoss()
+              isInBuildZone = false
+              isWaitingForSafeBeam = false
+              isInSafeBox = false
+              currentBeamPart = nil
+              currentSafeBox = nil
+              return
+          end
+          if not hasActiveSafeBeam(currentBeamPart) then
+              hasStartedBuildingSupplies = false
+              if returnToBoss() then
+                  isInBuildZone = false
+                  isWaitingForSafeBeam = false
+                  isInSafeBox = false
+                  currentBeamPart = nil
+                  currentSafeBox = nil
+                  isAboveBoss = true
+              end
+          end
+      end
+
+      local function resetAfterDeath()
+          disableFly()
+          isFlying = false
+          if isInBuildZone or isWaitingForSafeBeam then
+              hasStartedBuildingSupplies = true
+          end
+          isInSafeZone = false
+          isInBuildZone = false
+          isInSafeBox = false
+          isWaitingForSafeBeam = false
+          isAboveBoss = false
+          isDodgingOrb = false
+          isAtMiddle = false
+          currentBeamPart = nil
+          currentSafeBox = nil
+          currentTargetPart = nil
+          followOrb = nil
+          innerBall = nil
+          innerBallLastSize = nil
+          orbListenerConnected = false
+      end
+
+      local function connectDeath(newHumanoid)
+          if not newHumanoid then
+              return
+          end
+          newHumanoid.Died:Connect(resetAfterDeath)
+      end
+      connectDeath(humanoid)
+
+      player.CharacterAdded:Connect(function(newCharacter)
+          resetAfterDeath()
+          character = newCharacter
+          humanoid = character:WaitForChild("Humanoid", 10)
+          if not humanoid then
+              return
+          end
+          rootPart = character:WaitForChild("HumanoidRootPart", 10)
+          if not rootPart then
+              return
+          end
+          task.wait(0.5)
+          while humanoid.Health == 0 do
+              task.wait(0.1)
+          end
+          character.PrimaryPart = rootPart
+          connectDeath(humanoid)
+          task.wait(0.5)
+          findBoss()
+          if boss and isBossAlive() then
+              teleportToBoss()
+              if hasStartedBuildingSupplies then
+                  task.wait(0.5)
+              end
+          end
+      end)
+
+      RunService.Heartbeat:Connect(function()
+          character = player.Character
+          if not character then
+              return
+          end
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return
+          end
+          if not isBossAlive() then
+              if isFlying then
+                  disableFly()
+                  isFlying = false
+                  isAboveBoss = false
+                  isInBuildZone = false
+                  isWaitingForSafeBeam = false
+                  isInSafeZone = false
+                  hasStartedBuildingSupplies = false
+              end
+              return
+          end
+
+          -- Signaler que le bot combat un boss actif
+          isBossFighting = true
+
+          if isFlying then
+              maintainPosition()
+          end
+          if not boss or not boss.Parent then
+              findBoss()
+              if boss and isBossAlive() then
+                  teleportToBoss()
+              end
+              return
+          end
+          handleFollowOrb()
+          if isWaitingForSafeBeam then
+              checkSafeBeam()
+              return
+          end
+          if isInSafeZone then
+              if not checkCrystalDrop() then
+                  isInSafeZone = false
+                  hasStartedBuildingSupplies = false
+                  returnToBoss()
+              end
+              return
+          end
+          if not isInBuildZone and not isInSafeZone then
+              checkBuildingSupplies()
+          end
+          if isInBuildZone and not isWaitingForSafeBeam then
+              if not isBuildingSuppliesActive() then
+                  isInBuildZone = false
+                  hasStartedBuildingSupplies = false
+                  returnToBoss()
+              end
+          end
+          if hasStartedBuildingSupplies and not isInBuildZone and not isWaitingForSafeBeam and not isInSafeZone then
+              if isBuildingSuppliesActive() then
+                  checkBuildingSupplies()
+              else
+                  hasStartedBuildingSupplies = false
+              end
+          end
+      end)
+
+      workspace.ChildAdded:Connect(function(child)
+          if child.Name == "enchantedFirstBossFollowOrb" then
+              followOrb = child
+              innerBall = followOrb:FindFirstChild("innerBall")
+              if innerBall then
+                  innerBallLastSize = innerBall.Size
+                  orbListenerConnected = false
+                  setupInnerBallListener()
+              end
+          end
+      end)
+
+      workspace.ChildRemoved:Connect(function(child)
+          if child.Name == "enchantedFirstBossFollowOrb" then
+              followOrb = nil
+              innerBall = nil
+              innerBallLastSize = nil
+              orbListenerConnected = false
+              isDodgingOrb = false
+              isAtMiddle = false
+              if not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                  if isAboveBoss and isBossAlive() then
+                      teleportToBossWithHeight(normalHeight)
+                  end
+              end
+          end
+      end)
+
+      local function setupBuildZoneListeners(buildModel)
+          if not buildModel or not buildModel:IsA("Model") then
+              return
+          end
+          local beamPart = buildModel:FindFirstChild("beamPart")
+          if not beamPart or not beamPart:IsA("BasePart") then
+              return
+          end
+          for _, safeBeam in ipairs(getSafeBeams(beamPart)) do
+              if not safeBeam:GetAttribute("CrystalGolemListenerConnected") then
+                  safeBeam:SetAttribute("CrystalGolemListenerConnected", true)
+                  safeBeam:GetPropertyChangedSignal("Enabled"):Connect(function()
+                      if safeBeam.Enabled and isWaitingForSafeBeam and currentBeamPart == beamPart then
+                          if currentSafeBox then
+                              teleportToZone(currentSafeBox, "safeBox", false)
+                              isInSafeBox = true
+                          end
+                      elseif not safeBeam.Enabled and isWaitingForSafeBeam and currentBeamPart == beamPart then
+                          if hasActiveSafeBeam(beamPart) then
+                              return
+                          end
+                          hasStartedBuildingSupplies = false
+                          returnToBoss()
+                          isInBuildZone = false
+                          isWaitingForSafeBeam = false
+                          isInSafeBox = false
+                          currentBeamPart = nil
+                          currentSafeBox = nil
+                          isAboveBoss = true
+                      end
+                  end)
+              end
+          end
+          if not beamPart:GetAttribute("CrystalGolemChildListenerConnected") then
+              beamPart:SetAttribute("CrystalGolemChildListenerConnected", true)
+              beamPart.ChildAdded:Connect(function(child)
+                  if child:IsA("Beam") and child.Name == "safeBeam" then
+                      task.wait()
+                      setupBuildZoneListeners(buildModel)
+                      if child.Enabled and isWaitingForSafeBeam and currentBeamPart == beamPart then
+                          if currentSafeBox then
+                              teleportToZone(currentSafeBox, "safeBox", false)
+                              isInSafeBox = true
+                          end
+                      end
+                  end
+              end)
+          end
+      end
+
+      if buildZones then
+          for _, model in ipairs(buildZones:GetChildren()) do
+              if model:IsA("Model") then
+                  setupBuildZoneListeners(model)
+              end
+          end
+          buildZones.ChildAdded:Connect(function(child)
+              if child:IsA("Model") then
+                  task.wait(0.1)
+                  setupBuildZoneListeners(child)
+              end
+          end)
+      end
+
+      if safeZones then
+          for _, part in ipairs(safeZones:GetChildren()) do
+              if part:IsA("BasePart") then
+                  part:GetPropertyChangedSignal("Transparency"):Connect(function()
+                      if part.Transparency == 0 and not isInBuildZone and not isWaitingForSafeBeam then
+                          checkCrystalDrop()
+                      end
+                  end)
+              end
+          end
+      end
+
+      if supplyModels then
+          for _, model in ipairs(supplyModels:GetChildren()) do
+              if model:IsA("Model") then
+                  local supplies = model:FindFirstChild("buildingSupplies")
+                  if supplies and supplies:IsA("BasePart") then
+                      supplies:GetPropertyChangedSignal("Transparency"):Connect(function()
+                          if supplies.Transparency == 0 and not isInSafeZone and not isWaitingForSafeBeam then
+                              checkBuildingSupplies()
+                          end
+                      end)
+                  end
+              end
+          end
+      end
+
+      if enemyFolder then
+          enemyFolder.ChildAdded:Connect(function(child)
+              if child.Name == "CrystalGolem" or child.Name == "Crystal Golem" then
+                  boss = child
+                  if not isInSafeZone and not isInBuildZone and not isWaitingForSafeBeam then
+                      task.wait(0.2)
+                      teleportToBoss()
+                  end
+              end
+          end)
+      end
+
+      findBoss()
+      findFollowOrb()
+      if boss and isBossAlive() then
+          task.wait(0.2)
+          teleportToBoss()
+      end
+  end)
+
+  --==================================================
+  -- ANCIENT ENCHANTED TREE - BOSS SCRIPT (ROOM 5)
+  --==================================================
+  task.spawn(function()
+      local player = LocalPlayer
+      local character = player.Character or player.CharacterAdded:Wait()
+      local humanoid = character:WaitForChild("Humanoid")
+      local rootPart = character:WaitForChild("HumanoidRootPart")
+      character.PrimaryPart = rootPart
+
+      local boss = nil
+      local corePart = nil
+
+      local isOnBoss = false
+      local isFlying = false
+      local isRespawning = false
+
+      local bodyVelocity = nil
+      local bodyGyro = nil
+      local currentTargetPart = nil
+
+      local function findBoss()
+          local dungeon = workspace:FindFirstChild("dungeon")
+          if not dungeon then return nil end
+          
+          local room5 = dungeon:FindFirstChild("room5")
+          if not room5 then return nil end
+          
+          local enemyFolder = room5:FindFirstChild("enemyFolder")
+          if not enemyFolder then return nil end
+          
+          boss = enemyFolder:FindFirstChild("Ancient Enchanted Tree")
+          return boss
+      end
+
+      local function getCorePart()
+          if not boss then return nil end
+          
+          local core = boss:FindFirstChild("Core")
+          if not core then return nil end
+          
+          local inner = core:FindFirstChild("inner")
+          if inner and inner:IsA("BasePart") then
+              return inner
+          end
+          
+          return nil
+      end
+
+      local function disableFly()
+          isFlying = false
+          
+          if currentTargetPart then
+              currentTargetPart:Destroy()
+              currentTargetPart = nil
+          end
+          
+          if bodyVelocity then
+              bodyVelocity:Destroy()
+              bodyVelocity = nil
+          end
+          
+          if bodyGyro then
+              bodyGyro:Destroy()
+              bodyGyro = nil
+          end
+      end
+
+      local function enableFly()
+          character = player.Character
+          if not character or not corePart then
+              return false
+          end
+          
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return false
+          end
+          
+          disableFly()
+          
+          local target = Instance.new("Part")
+          target.Name = "BossTarget"
+          target.Size = Vector3.new(1, 1, 1)
+          target.Anchored = true
+          target.CanCollide = false
+          target.CanTouch = false
+          target.CanQuery = false
+          target.Transparency = 1
+          target.Position = corePart.Position
+          target.Parent = workspace
+          currentTargetPart = target
+          
+          bodyVelocity = Instance.new("BodyVelocity")
+          bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+          bodyVelocity.P = 10000
+          bodyVelocity.Velocity = Vector3.zero
+          bodyVelocity.Parent = root
+          
+          bodyGyro = Instance.new("BodyGyro")
+          bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+          bodyGyro.P = 10000
+          bodyGyro.CFrame = root.CFrame
+          bodyGyro.Parent = root
+          
+          isFlying = true
+          isOnBoss = true
+          isRespawning = false
+          
+          return true
+      end
+
+      local function teleportToBoss()
+          character = player.Character
+          if not character then
+              return false
+          end
+          
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return false
+          end
+          
+          if not boss or not boss.Parent then
+              findBoss()
+              if not boss then
+                  return false
+              end
+          end
+          
+          corePart = getCorePart()
+          if not corePart then
+              return false
+          end
+          
+          disableFly()
+          root.CFrame = corePart.CFrame
+          task.wait()
+          enableFly()
+          
+          return true
+      end
+
+      local function forceTeleportToBoss()
+          character = player.Character
+          if not character then
+              return false
+          end
+          
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return false
+          end
+          
+          if not boss or not boss.Parent then
+              findBoss()
+              if not boss then
+                  return false
+              end
+          end
+          
+          corePart = getCorePart()
+          if not corePart then
+              return false
+          end
+          
+          disableFly()
+          
+          local originalGravity = workspace.Gravity
+          workspace.Gravity = 0
+          
+          root.CFrame = corePart.CFrame
+          root.Velocity = Vector3.zero
+          root.RotVelocity = Vector3.zero
+          
+          task.wait(0.1)
+          workspace.Gravity = originalGravity
+          
+          enableFly()
+          
+          return true
+      end
+
+      local function maintainPosition()
+          character = player.Character
+          if not isFlying or not currentTargetPart or not character then
+              return
+          end
+          
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return
+          end
+          
+          if corePart and corePart.Parent then
+              currentTargetPart.Position = corePart.Position
+          end
+          
+          local targetPos = currentTargetPart.Position
+          local direction = targetPos - root.Position
+          local distance = direction.Magnitude
+          
+          if distance > 0.5 then
+              local speed = math.min(distance * 2, 34)
+              if bodyVelocity then
+                  bodyVelocity.Velocity = direction.Unit * speed
+              end
+          else
+              if bodyVelocity then
+                  bodyVelocity.Velocity = Vector3.zero
+              end
+          end
+          
+          if bodyGyro then
+              local lookAtPos = currentTargetPart.Position + Vector3.new(0, 2, 0)
+              bodyGyro.CFrame = CFrame.lookAt(root.Position, lookAtPos)
+          end
+      end
+
+      local function resetAfterDeath()
+          disableFly()
+          isFlying = false
+          isOnBoss = false
+          isRespawning = true
+          boss = nil
+          corePart = nil
+          currentTargetPart = nil
+      end
+
+      local function connectDeath(newHumanoid)
+          if not newHumanoid then return end
+          newHumanoid.Died:Connect(resetAfterDeath)
+      end
+      connectDeath(humanoid)
+
+      player.CharacterAdded:Connect(function(newCharacter)
+          resetAfterDeath()
+          character = newCharacter
+          
+          humanoid = character:WaitForChild("Humanoid", 10)
+          if not humanoid then return end
+          
+          rootPart = character:WaitForChild("HumanoidRootPart", 10)
+          if not rootPart then return end
+          
+          task.wait(0.5)
+          while humanoid.Health == 0 do
+              task.wait(0.1)
+          end
+          
+          character.PrimaryPart = rootPart
+          connectDeath(humanoid)
+          
+          task.wait(0.5)
+          
+          findBoss()
+          if boss then
+              corePart = getCorePart()
+              if corePart then
+                  forceTeleportToBoss()
+              end
+          end
+      end)
+
+      local function setupBossListeners()
+          local dungeon = workspace:FindFirstChild("dungeon")
+          if not dungeon then return end
+          
+          local room5 = dungeon:FindFirstChild("room5")
+          if not room5 then return end
+          
+          local enemyFolder = room5:FindFirstChild("enemyFolder")
+          if not enemyFolder then return end
+          
+          enemyFolder.ChildAdded:Connect(function(child)
+              if child.Name == "Ancient Enchanted Tree" then
+                  boss = child
+                  task.wait(0.2)
+                  corePart = getCorePart()
+                  if corePart then
+                      teleportToBoss()
+                  end
+              end
+          end)
+      end
+      setupBossListeners()
+
+      RunService.Stepped:Connect(function()
+          if (isFlying or isOnBoss) and character then
+              for _, part in ipairs(character:GetDescendants()) do
+                  if part:IsA("BasePart") and part.CanCollide then
+                      part.CanCollide = false
+                  end
+              end
+          end
+      end)
+
+      RunService.Heartbeat:Connect(function()
+          character = player.Character
+          if not character then
+              return
+          end
+          
+          local root = character:FindFirstChild("HumanoidRootPart")
+          if not root then
+              return
+          end
+          
+          if not boss or not boss.Parent then
+              findBoss()
+              if boss then
+                  corePart = getCorePart()
+                  if corePart then
+                      teleportToBoss()
+                  end
+              else
+                  if isFlying then
+                      disableFly()
+                      isFlying = false
+                      isOnBoss = false
+                  end
+                  return
+              end
+          end
+          
+          if boss and not corePart then
+              corePart = getCorePart()
+              if corePart then
+                  teleportToBoss()
+              end
+          end
+
+          -- Signaler que le bot combat un boss actif
+          isBossFighting = true
+          
+          -- Noclip (0 collision) pendant le boss Ancient Enchanted Tree
+          for _, part in ipairs(character:GetDescendants()) do
+              if part:IsA("BasePart") and part.CanCollide then
+                  part.CanCollide = false
+              end
+          end
+
+          if isFlying then
+              maintainPosition()
+          end
+          
+          if not isOnBoss and boss and corePart then
+              if isRespawning then
+                  forceTeleportToBoss()
+                  isRespawning = false
+              else
+                  teleportToBoss()
+              end
+          end
+      end)
+
+      findBoss()
+      if boss then
+          task.wait(0.2)
+          corePart = getCorePart()
+          if corePart then
+              teleportToBoss()
+          end
+      end
+  end)
+
+  --------------------------------------------------
+  -- MONITEUR D'ÉTAT DE SANTÉ ET MORT DES BOSS (GOLEM, TREE, DRAGON)
+  --------------------------------------------------
+  RunService.Heartbeat:Connect(function()
+      local dungeon = workspace:FindFirstChild("dungeon")
+      local golemAlive = false
+      local treeAlive = false
+      local dragonAlive = false
+
+      if dungeon then
+          local room2 = dungeon:FindFirstChild("room2")
+          if room2 then
+              local ef = room2:FindFirstChild("enemyFolder")
+              if ef then
+                  local g = ef:FindFirstChild("CrystalGolem") or ef:FindFirstChild("Crystal Golem")
+                  if g and g.Parent then
+                      local hum = g:FindFirstChildOfClass("Humanoid")
+                      if hum and hum.Health > 0 then
+                          golemAlive = true
+                      end
+                  end
+              end
+          end
+
+          local room5 = dungeon:FindFirstChild("room5")
+          if room5 then
+              local ef = room5:FindFirstChild("enemyFolder")
+              if ef then
+                  local t = ef:FindFirstChild("Ancient Enchanted Tree")
+                  if t and t.Parent then
+                      local hum = t:FindFirstChildOfClass("Humanoid")
+                      if not hum or hum.Health > 0 then
+                          treeAlive = true
+                      end
+                  end
+              end
+          end
+      end
+
+      if not golemAlive and not treeAlive then
+          if isBossFighting then
+              isBossFighting = false
+          end
+      end
+  end)
+
+  --------------------------------------------------
+  -- FONCTIONS DE COMBAT MOBS NORMAUX
+  --------------------------------------------------
+  local function GetEnemies()
+      local enemies = {}
+      local enemiesFolder = workspace:FindFirstChild("enemies")
+      if enemiesFolder then
+          for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+              if enemy:IsA("Model") then
+                  local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+                  if humanoid and humanoid.Health > 0 and enemy ~= LocalPlayer.Character then
+                      ClearModelAccessories(enemy)
+                      table.insert(enemies, enemy)
+                  end
+              end
+          end
+      end
+      
+      for _, folder in ipairs(workspace:GetDescendants()) do
+          if folder:IsA("Folder") and folder.Name == "enemyFolder" then
+              for _, enemy in ipairs(folder:GetChildren()) do
+                  if enemy:IsA("Model") then
+                      local humanoid = enemy:FindFirstChildOfClass("Humanoid")
+                      if humanoid and humanoid.Health > 0 and enemy ~= LocalPlayer.Character then
+                          ClearModelAccessories(enemy)
+                          table.insert(enemies, enemy)
+                      end
+                  end
+              end
+          end
+      end
+      return enemies
+  end
+
+  local function GetPosition(inst)
+      if not inst then return nil end
+      if inst:IsA("BasePart") then
+          return inst.Position
+      elseif inst:IsA("Model") then
+          if inst.PrimaryPart then
+              return inst.PrimaryPart.Position
+          end
+          local part = inst:FindFirstChildWhichIsA("BasePart", true)
+          if part then
+              return part.Position
+          end
+          local success, cf = pcall(function() return inst:GetBoundingBox() end)
+          if success and cf then
+              return cf.Position
+          end
+      end
+      return nil
+  end
+
+  local function GetHRP(model)
+      if not model then return nil end
+      if model:IsA("BasePart") then return model end
+      
+      local hrp = model:FindFirstChild("HumanoidRootPart") 
+          or model:FindFirstChild("Torso") 
+          or model.PrimaryPart 
+          or model:FindFirstChild("UpperTorso")
+          
+      if hrp then
+          if hrp:IsA("BasePart") then
+              return hrp
+          elseif hrp:IsA("Model") or hrp:IsA("Folder") then
+              return hrp.PrimaryPart or hrp:FindFirstChildWhichIsA("BasePart", true)
+          end
+      end
+      
+      return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+  end
+
+  local function FindBestEnemy()
+      local enemies = GetEnemies()
+      if #enemies == 0 then return nil end
+      local bestEnemy = nil
+      local bestDistance = math.huge
+      local playerPos = HRP and HRP.Position
+      if not playerPos then return nil end
+      
+      for _, enemy in ipairs(enemies) do
+          local enemyHRP = GetHRP(enemy)
+          local enemyPos = GetPosition(enemyHRP)
+          if enemyPos then
+              local distance = (playerPos - enemyPos).Magnitude
+              if distance < bestDistance then
+                  bestDistance = distance
+                  bestEnemy = enemy
+              end
+          end
+      end
+      return bestEnemy
+  end
+
+  local function GetEquippedWeapon()
+      local character = LocalPlayer.Character
+      if not character then return nil end
+      local weaponValue = LocalPlayer:FindFirstChild("weaponEquipped")
+      if weaponValue then
+          if weaponValue:IsA("ObjectValue") then
+              return weaponValue.Value
+          elseif weaponValue:IsA("StringValue") then
+              return character:FindFirstChild(weaponValue.Value)
+          end
+      end
+      local dualRight = character:FindFirstChild("dualRight")
+      if dualRight then return dualRight end
+      
+      for _, child in ipairs(character:GetChildren()) do
+          if child:IsA("Tool") and child:FindFirstChild("swing") then
+              return child
+          end
+      end
+      return nil
+  end
+
+  local function SwingWeapon()
+      local weapon = GetEquippedWeapon()
+      if not weapon then return end
+      local swing = weapon:FindFirstChild("swing")
+      if swing and swing:IsA("RemoteEvent") then
+          pcall(function() swing:FireServer() end)
+      end
+  end
+
+  local function UseSpells()
+      local backpack = LocalPlayer:FindFirstChild("Backpack")
+      if not backpack then return end
+      local abilityUsed = ReplicatedStorage:FindFirstChild("remotes")
+      if abilityUsed then abilityUsed = abilityUsed:FindFirstChild("abilityUsed") end
+      if not abilityUsed then return end
+      
+      for _, tool in ipairs(backpack:GetChildren()) do
+          if tool:IsA("Tool") then
+              local abilitySlot = tool:FindFirstChild("abilitySlot")
+              if not abilitySlot then continue end
+              local slot = string.lower(tostring(abilitySlot.Value))
+              if slot ~= "q" and slot ~= "e" then continue end
+              
+              local cooldown = tool:FindFirstChild("cooldown")
+              if cooldown then
+                  local value = cooldown.Value
+                  if cooldown:IsA("BoolValue") then
+                      if value == true then continue end
+                  elseif typeof(value) == "number" then
+                      if value > 0 then continue end
+                  end
+              end
+              
+              pcall(function()
+                  abilityUsed:FireServer(slot, tool)
+                  local spellEvent = tool:FindFirstChild("spellEvent")
+                  if spellEvent and spellEvent:IsA("RemoteEvent") then spellEvent:FireServer() end
+                  local abilityEvent = tool:FindFirstChild("abilityEvent")
+                  if abilityEvent and abilityEvent:IsA("RemoteEvent") then abilityEvent:FireServer() end
+              end)
+          end
+      end
+  end
+
+  local function GetActiveBossHRP()
+      local dungeon = workspace:FindFirstChild("dungeon")
+      if not dungeon then return nil, nil end
+      
+      -- Boss 1 : Crystal Golem (Room 2)
+      local room2 = dungeon:FindFirstChild("room2")
+      if room2 then
+          local ef = room2:FindFirstChild("enemyFolder")
+          if ef then
+              local g = ef:FindFirstChild("CrystalGolem") or ef:FindFirstChild("Crystal Golem")
+              if g and g.Parent then
+                  local hum = g:FindFirstChildOfClass("Humanoid")
+                  if hum and hum.Health > 0 then
+                      local hrp = g:FindFirstChild("HumanoidRootPart") or g.PrimaryPart or g:FindFirstChildWhichIsA("BasePart")
+                      return hrp, "CrystalGolem"
+                  end
+              end
+          end
+      end
+      
+      -- Boss 2 : Ancient Enchanted Tree (Room 5)
+      local room5 = dungeon:FindFirstChild("room5")
+      if room5 then
+          local ef = room5:FindFirstChild("enemyFolder")
+          if ef then
+              local t = ef:FindFirstChild("Ancient Enchanted Tree")
+              if t and t.Parent then
+                  local core = t:FindFirstChild("Core")
+                  local inner = core and core:FindFirstChild("inner")
+                  local hrp = inner or t.PrimaryPart or t:FindFirstChildWhichIsA("BasePart")
+                  return hrp, "AncientTree"
+              end
+          end
+      end
+
+      return nil, nil
+  end
+
+  --------------------------------------------------
+  -- BOUCLE DE COMBAT ET D'ATTAQUE UNIFIÉE
+  --------------------------------------------------
+  local function CombatLoop()
+      local swingTimer = 0
+      local spellTimer = 0
+      local lastDragonSpellTime = 0
+      local spellDelay = 0.2
+      local lastAngle = 0
+      local lastLogTime = 0
+      local enemyCount = 0
+      
+      while true do
+          Character = LocalPlayer.Character
+          if not Character then task.wait(0.5) continue end
+          
+          HRP = Character:FindFirstChild("HumanoidRootPart")
+          Humanoid = Character:FindFirstChildOfClass("Humanoid")
+          if not HRP or not HRP.Parent or not Humanoid then task.wait(0.5) continue end
+          
+          Humanoid.Sit = false
+          Humanoid.PlatformStand = false
+
+          -- SI UN BOSS EST EN COURS : REGARDER ET ORIENTER LES ATTAQUES VERS LE BOSS
+          local bossPart, bossType = GetActiveBossHRP()
+          if isBossFighting or bossPart then
+              local bossPos = GetPosition(bossPart)
+              if bossPos and HRP then
+                  local dist = (HRP.Position - bossPos).Magnitude
+                  local maxCombatRange = (bossType == "Dragon") and (CONFIG.DRAGON_SPELL_RANGE or 1000) or CONFIG.COMBAT_RANGE_BOSS
+
+                  if dist <= maxCombatRange then
+                      HRP.CFrame = CFrame.lookAt(HRP.Position, bossPos)
+                  end
+
+                  local dt = task.wait(0.1)
+                  swingTimer = swingTimer + dt
+                  if swingTimer >= CONFIG.SWING_DELAY then
+                      if dist <= CONFIG.COMBAT_RANGE_BOSS then
+                          SwingWeapon()
+                      end
+                      swingTimer = 0
+                  end
+
+                  spellTimer = spellTimer + dt
+                  if spellTimer >= spellDelay then
+                      -- 🔥 Lancer les sorts jusqu'à DRAGON_SPELL_RANGE (1000m) sur le Dragon !
+                      if dist <= maxCombatRange then
+                          UseSpells()
+                      end
+                      spellTimer = 0
+                  end
+                  continue
+              end
+          end
+
+          -- MODE NORMAL : COMBAT SUR MOBS NORMAUX
+          if isDodgeActive then
+              task.wait(0.05)
+              continue
+          end
+
+          Humanoid.WalkSpeed = CONFIG.MOVE_SPEED
+          Humanoid.AutoRotate = false
+          
+          local enemy = FindBestEnemy()
+          if not enemy then task.wait(0.5) continue end
+          local enemyHRP = GetHRP(enemy)
+          local enemyPos = GetPosition(enemyHRP)
+          if not enemyPos then task.wait(0.5) continue end
+          
+          local playerPos = HRP.Position
+          local distance = (playerPos - enemyPos).Magnitude
+          
+          local lookPos = Vector3.new(enemyPos.X, HRP.Position.Y, enemyPos.Z)
+          HRP.CFrame = CFrame.lookAt(HRP.Position, lookPos)
+          
+          local currentTime = os.clock()
+          if currentTime - lastLogTime > 5 then
+              local enemies = GetEnemies()
+              if #enemies ~= enemyCount then
+                  enemyCount = #enemies
+              end
+              lastLogTime = currentTime
+          end
+          
+          if distance < CONFIG.SAFE_DISTANCE then
+              local dir = (playerPos - enemyPos).Unit
+              local retreatPos = playerPos + dir * CONFIG.SAFE_DISTANCE
+              Humanoid:MoveTo(retreatPos)
+              task.wait()
+              continue
+          end
+          
+          if distance > CONFIG.COMBAT_RANGE then
+              -- 🔥 Tir de sorts à 500m sur le Dragon sans interrompre la course à pied
+              local enemyName = string.lower(enemy.Name)
+              if string.find(enemyName, "dragon") and distance <= 500 then
+                  local currentTime = os.clock()
+                  if currentTime - lastDragonSpellTime >= 0.25 then
+                      lastDragonSpellTime = currentTime
+                      task.spawn(UseSpells)
+                  end
+              end
+
+              Humanoid.WalkSpeed = CONFIG.MOVE_SPEED
+              Humanoid:MoveTo(enemyPos)
+              task.wait()
+              continue
+          end
+          
+          lastAngle = lastAngle + 0.02
+          if lastAngle > math.pi * 2 then
+              lastAngle = lastAngle - math.pi * 2
+          end
+          
+          local strafeX = math.cos(lastAngle) * CONFIG.STRAFE_DISTANCE
+          local strafeZ = math.sin(lastAngle) * CONFIG.STRAFE_DISTANCE
+          
+          local targetPos = enemyPos + Vector3.new(strafeX, 0, strafeZ)
+          Humanoid:MoveTo(targetPos)
+          
+          local lookPosAfterMove = Vector3.new(enemyPos.X, HRP.Position.Y, enemyPos.Z)
+          HRP.CFrame = CFrame.lookAt(HRP.Position, lookPosAfterMove)
+          
+          local dt = task.wait()
+          
+          swingTimer = swingTimer + dt
+          if swingTimer >= CONFIG.SWING_DELAY then
+              SwingWeapon()
+              swingTimer = 0
+          end
+          
+          spellTimer = spellTimer + dt
+          if spellTimer >= spellDelay then
+              UseSpells()
+              spellTimer = 0
+          end
+      end
+  end
+
+  --------------------------------------------------
+  -- DÉMARRER LE COMBAT
+  --------------------------------------------------
+  CombatLoop()
