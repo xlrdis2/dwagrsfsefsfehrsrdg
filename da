@@ -1417,9 +1417,9 @@ local function sendWebhook(payload)
 end
 
 local function getFormattedPlayerName()
-    local name = amelia is a slut
-    local cleanName = name:gsub("_%d+$", "")
-    return cleanName .. " is here"
+    local names = { "Alpha", "Bravo", "Charlie", "Delta" }
+    local name = names[math.random(#names)]
+    return name .. " is here"
 end
 
 local isSendingWebhook = false
@@ -1620,7 +1620,7 @@ local function sendBatchToDiscord()
             color = embedColor,
             fields = fields,
             footer = {
-                text = string.format(amelia's onlyfans • %s", os.date("%m/%d/%Y • %I:%M %p")),
+                text = string.format("amelia's onlyfans • %s", os.date("%m/%d/%Y • %I:%M %p")),
                 icon_url = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. tostring(LocalPlayer.UserId) .. "&width=150&height=150&format=png"
             }
         }}
