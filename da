@@ -1,5 +1,3 @@
-if getgenv().ReinjectLoaded then return end
-getgenv().ReinjectLoaded = true
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -2080,7 +2078,7 @@ local function LoadDungeonScript(config)
     
     local DUNGEON_SCRIPTS = {
         ["Orbital Outpost"] = "https://raw.githubusercontent.com/ImBrokz89/Dungeon/refs/heads/main/OrbitalOutpost",
-        ["Enchanted Forest"] = "ttps://raw.githubusercontent.com/xlrdis2/dwagrsfsefsfehrsrdg/refs/heads/main/mainddd",
+        ["Enchanted Forest"] = "https://raw.githubusercontent.com/xlrdis2/dwagrsfsefsfehrsrdg/refs/heads/main/mainddd",
         ["Volcanic Chambers"] = "https://raw.githubusercontent.com/ImBrokz89/Dungeon/refs/heads/main/VolcanicChambers",
     }
     
