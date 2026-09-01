@@ -10,7 +10,7 @@ local LocalPlayer = Players.LocalPlayer
 --------------------------------------------------
 local CONFIG = {
     -- Combat Mobs Normaux
-    MOVE_SPEED = 20,
+    MOVE_SPEED = 50,
     SWING_DELAY = 0.1,
     COMBAT_RANGE = 50,
     COMBAT_RANGE_BOSS = 150,
