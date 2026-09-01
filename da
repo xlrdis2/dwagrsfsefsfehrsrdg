@@ -237,9 +237,9 @@ local function CreateConfigInWorkspace()
         },
         Combat = {
             MoveSpeed = 30,
-            CombatRange = 45=,
+            CombatRange = 35,
             CombatRangeBoss = 400,
-            StrafeDistance = 3,
+            StrafeDistance = 10,
             SafeDistance = 1,
             SwingDelay = 0.1,
         },
