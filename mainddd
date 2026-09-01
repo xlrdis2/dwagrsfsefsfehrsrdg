@@ -14,13 +14,13 @@ local CONFIG = {
     SWING_DELAY = 0.1,
     COMBAT_RANGE = 60,
     COMBAT_RANGE_BOSS = 400,
-    STRAFE_DISTANCE = 11,
-    SAFE_DISTANCE = 2,
+    STRAFE_DISTANCE = 5,
+    SAFE_DISTANCE = 10,
     
     -- Auto-Esquive (Désactivé sur les Boss)
     ORB_NAMES = { "battlemageorb" },
     ORB_DANGER_DISTANCE = 14,
-    HITBOX_SAFE_MARGIN = 3,
+    HITBOX_SAFE_MARGIN = 2,
     DANGER_TRIGGER_MARGIN = 1,
 }
 
