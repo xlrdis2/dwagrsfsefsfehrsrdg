@@ -20,8 +20,8 @@ local CONFIG = {
     -- Auto-Esquive (Désactivé sur les Boss)
     ORB_NAMES = { "battlemageorb" },
     ORB_DANGER_DISTANCE = 14,
-    HITBOX_SAFE_MARGIN = 5,
-    DANGER_TRIGGER_MARGIN = 3,
+    HITBOX_SAFE_MARGIN = 2,
+    DANGER_TRIGGER_MARGIN = 1,
 }
 
 -- 🔥 Application de la configuration transmise par le script principal ou Config.json
