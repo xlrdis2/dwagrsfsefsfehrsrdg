@@ -236,11 +236,11 @@ local function CreateConfigInWorkspace()
             AutoReplay = true,
         },
         Combat = {
-            MoveSpeed = 20,
-            CombatRange = 50,
+            MoveSpeed = 30,
+            CombatRange = 45=,
             CombatRangeBoss = 400,
-            StrafeDistance = 15,
-            SafeDistance = 3,
+            StrafeDistance = 3,
+            SafeDistance = 1,
             SwingDelay = 0.1,
         },
         Customization = {
