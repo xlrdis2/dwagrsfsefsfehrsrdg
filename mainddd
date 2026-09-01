@@ -12,10 +12,10 @@ local CONFIG = {
     -- Combat Mobs Normaux
     MOVE_SPEED = 30,
     SWING_DELAY = 0.1,
-    COMBAT_RANGE = 45,
-    COMBAT_RANGE_BOSS = 150,
-    STRAFE_DISTANCE = 30,
-    SAFE_DISTANCE = 2,
+    COMBAT_RANGE = 40,
+    COMBAT_RANGE_BOSS = 400,
+    STRAFE_DISTANCE = 12,
+    SAFE_DISTANCE = 8,
     
     -- Auto-Esquive (Désactivé sur les Boss)
     ORB_NAMES = { "battlemageorb" },
